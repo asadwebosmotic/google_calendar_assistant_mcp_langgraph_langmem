@@ -8,7 +8,14 @@ livekit==1.0.12
 google-auth==2.40.3
 google-auth-oauthlib==1.2.2
 google-auth-httplib2==0.2.0
-google.generativeai==0.8.5
+# google-generativeai
+# google-ai-generativelanguage==0.6.18
 python-dateutil
 sentence-transformers
 langmem
+langchain-google-genai==2.1.10
+livekit-agents
+livekit-plugins-cartesia
+livekit-plugins-deepgram
+livekit-plugins-google
+livekit-plugins-silero

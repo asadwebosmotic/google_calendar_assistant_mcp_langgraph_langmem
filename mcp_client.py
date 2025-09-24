@@ -2,12 +2,16 @@
 import asyncio
 import json
 from fastapi import FastAPI, Body
+import logging
 from pydantic import BaseModel, AnyUrl
 from typing import Dict, Any, Optional
 from contextlib import AsyncExitStack
+import uuid
 
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
+from langgraph_flow import build_graph, CalendarState
+from utils_serialization import serialize_tool_result
 
 import google.generativeai as genai
 import os
@@ -23,6 +27,9 @@ MODEL_NAME = "gemini-2.5-flash"
 
 # ---------- FastAPI App ----------
 app = FastAPI(title="Google Calendar Assistant")
+logger = logging.getLogger(__name__)
+if not logger.handlers:
+    logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
 
 
 # ---------- Request Schema ----------
@@ -115,37 +122,6 @@ def sanitize_schema(schema: dict) -> dict:
             clean[k] = v
     return clean
 
-def serialize_tool_result(result):
-    """Convert CallToolResult or MCP content into JSON-serializable form."""
-    if result is None:
-        return None
-
-    # If it's already a dict or str
-    if isinstance(result, (dict, str, int, float, bool)):
-        return result
-
-    # If it's a list, serialize each element
-    if isinstance(result, list):
-        return [serialize_tool_result(r) for r in result]
-
-    # If it has .to_dict() (MCP objects often do)
-    if hasattr(result, "to_dict"):
-        return result.to_dict()
-
-    # If it's a Pydantic-like object
-    if hasattr(result, "__dict__"):
-        return {k: serialize_tool_result(v) for k, v in result.__dict__.items()}
-
-    # Special handling for TextContent (common MCP return type)
-    if hasattr(result, "text"):
-        return result.text
-
-    if hasattr(result, "_pb"):  # protobuf hack
-        return json.loads(json.dumps(result, default=str))
-        
-    # Fallback: string representation
-    return str(result)
-
 
 # ---------- Gemini Helper ----------
 async def run_with_gemini(user_query: str) -> str:
@@ -220,5 +196,20 @@ async def run_with_gemini(user_query: str) -> str:
 # ---------- FastAPI Endpoint ----------
 @app.post("/assistant/query")
 async def assistant_query(request: QueryRequest = Body(...)):
-    final_answer = await run_with_gemini(request.query)
-    return {"response": final_answer}
+    logger.debug("[/assistant/query] incoming query=%s", request.query)
+    try:
+        graph = build_graph()
+        init_state = CalendarState(messages=[{"role": "user", "content": request.query}])
+        final_state = await graph.ainvoke(
+            init_state,
+            config={
+                "configurable": {
+                    # Satisfy MemorySaver checkpointer requirement
+                    "thread_id": str(uuid.uuid4()),
+                }
+            },
+        )
+        return {"response": final_state.get("message")}
+    except Exception as e:
+        logger.exception("[/assistant/query] error: %s", e)
+        return {"response": None, "error": str(e)}
